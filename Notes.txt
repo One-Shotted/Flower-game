@@ -1,0 +1,1 @@
+Notes: Make A public folder, Html/jss folder, and a domain folder. 

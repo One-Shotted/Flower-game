@@ -1,0 +1,501 @@
+let canvas = document.getElementById('canvas');
+let ctx = canvas.getContext('2d');
+const tileSize = 50;
+
+const menu = document.querySelector('.menu');
+
+const fullscreen = {
+    ratio: 9 / 16,
+    zoom: 1200,
+}
+let renderScale = 1;
+
+function resize(){
+    const dpi = window.devicePixelRatio;
+    canvas.style.width = Math.ceil(window.innerWidth) + 'px';
+    canvas.style.height = Math.ceil(window.innerHeight) + 'px';
+    canvas.width = Math.ceil(window.innerWidth) * dpi;
+    canvas.height = Math.ceil(window.innerHeight) * dpi;
+    canvas.zoom = Math.max(0.1, Math.round((Math.max(canvas.height, canvas.width * fullscreen.ratio) / fullscreen.zoom * renderScale) * 100) / 100);
+    // w and h are calced with zoom
+    canvas.w = canvas.width / canvas.zoom;
+    canvas.h = canvas.height / canvas.zoom;
+    // ctx.translate(canvas.width/2, canvas.height/2);
+    ctx.scale(canvas.zoom, canvas.zoom);
+    // ctx.translate(-canvas.width/2, -canvas.height/2);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    // ctx.imageSmoothingEnabled = false;
+
+    // also scaling the menu
+    menu.style.width = Math.ceil(window.innerWidth) / canvas.zoom * dpi / 1.65 + 'px';
+    menu.style.height = Math.ceil(window.innerHeight) / canvas.zoom * dpi / 1.65 + 'px';
+    menu.style.transform = `scale(${canvas.zoom / dpi * 1.65})`;
+    menu.style.transformOrigin = `0px 0px`;
+
+    // also scaling the login menu if applicable
+    if(window.state === "account"){
+        const loginMenu = document.querySelector('.login-menu');
+        loginMenu.style.width = Math.ceil(window.innerWidth) / canvas.zoom * dpi / 1.65 + 'px';
+        loginMenu.style.height = Math.ceil(window.innerHeight) / canvas.zoom * dpi / 1.65 + 'px';
+        loginMenu.style.transform = `scale(${canvas.zoom / dpi * 1.65})`;
+        loginMenu.style.transformOrigin = `0px 0px`;
+    }
+
+    menuInventory.positionPetalSlots();
+    inventory.positionPetalSlots();
+    levelBar.calculateDimensions();
+    biomeManager.updateArrowDimensions();
+    globalInventory.resizeScroll();
+    changelog.resizeScroll();
+
+    if(window.is3D === true) window.resize3D();
+}
+  
+window.addEventListener('resize', function () {
+    resize();
+});
+
+const menuEnemyIncrementRadii = [3.6, 4.8, 6.6, 7.2, 8, 12, 18];
+
+let lastTime = performance.now();
+dt = 0;
+let time = performance.now();
+
+window.fps = 0;
+window.framesRendered = 0;
+window.lastFramesRenderedResetTime = performance.now();
+window.toRenderDebug = false;
+// window.toRenderHitboxes = false;
+
+function render(){
+    requestAnimationFrame(render);
+
+    draw();
+}
+
+function draw(){
+    time = performance.now();
+    dt = time - lastTime;
+    lastTime = time;
+
+    if (dt > 1000){
+        // dt = 1000;
+        dt = 0;
+    }
+
+    if(window.state === "account"){
+        renderAccountMenu(dt);
+    } else if(window.state === "menu"){
+        renderMenu(dt);
+    } else {
+        renderGame(dt);
+        if(window.state === "disconnected"){
+            renderDisconnectedText(dt);
+        }
+    }
+
+    if(window.toRenderDebug === true){
+        window.framesRendered++;
+        if(window.framesRendered > 10){
+            const now = performance.now();
+            window.fps = Math.floor(window.framesRendered / (now - window.lastFramesRenderedResetTime) * 1000);
+            window.lastFramesRenderedResetTime = now;
+            window.framesRendered = 0;
+        }
+        renderDebug();
+    }
+}
+
+const globalInventory = new GlobalInventory();
+let maxRarityObtained = 0;
+
+const menuInventory = new Inventory(savedSlotAmount);
+menuInventory.initChangePetalsQueue();
+let squadUI = new SquadUI();
+
+const craftingMenu = new CraftingMenu();
+
+let connectingTextAnimationCompletion = 1;
+
+function renderMenu(dt){
+    // getCurrentBiomeData(){
+    //     return {
+    //         ratio: this.transitionAnimationTimer / this.transitionTime,
+    //         last: this.biomeOrder[this.lastBiome],
+    //         current: this.biomeOrder[this.currentBiome]
+    //     }
+    // }
+    const {ratio, last, current, direction} = biomeManager.getCurrentBiomeData();
+    // ctx.fillStyle = '#1ea761';
+    // ctx.strokeStyle = "#1c8c54";
+    
+    if(ratio !== 1){
+        if(direction === 'right'){
+            ctx.fillStyle = Colors.biomes[last].background;
+            ctx.strokeStyle = Colors.biomes[last].grid;
+        } else {
+            ctx.fillStyle = Colors.biomes[current].background;
+            ctx.strokeStyle = Colors.biomes[current].grid;
+        }
+        
+        renderBg();
+
+        ctx.save();
+        ctx.beginPath();
+        if(direction === 'right'){
+            ctx.rect(0,0,smoothstep(smoothstep(ratio)) * canvas.w, canvas.h);
+        } else {
+            ctx.rect(0,0,(1 - smoothstep(smoothstep(ratio))) * canvas.w, canvas.h);
+        }
+        ctx.clip();
+        ctx.closePath();
+
+        if(direction === 'right'){
+            ctx.fillStyle = Colors.biomes[current].background;
+            ctx.strokeStyle = Colors.biomes[current].grid;
+        } else {
+            ctx.fillStyle = Colors.biomes[last].background;
+            ctx.strokeStyle = Colors.biomes[last].grid;
+        }
+        renderBg();
+
+        ctx.restore();
+
+        for(let i = 0; i < menuEnemies.length; i++){
+            if(menuEnemies[i].updatedBiome === undefined){
+                continue;
+            }
+            if((direction === 'right' && menuEnemies[i].render.x <= smoothstep(smoothstep(ratio)) * canvas.w) || (direction === 'left' && menuEnemies[i].render.x >= (1 - smoothstep(smoothstep(ratio))) * canvas.w)){
+                delete menuEnemies[i].updatedBiome;
+                const biomeTypes = biomeEnemyMap[current];
+                menuEnemies[i].type = biomeTypes[Math.floor(Math.random() * biomeTypes.length)];
+                menuEnemies[i] = new Enemy(menuEnemies[i]);
+            }
+        }
+    } else {
+        ctx.fillStyle = Colors.biomes[current].background;
+        ctx.strokeStyle = Colors.biomes[current].grid;
+        renderBg();
+        // ctx.fillRect(0,0,canvas.w,canvas.h);
+
+        // // tiles
+        // const timeOffset = (-time/20) % 50;
+
+        // ctx.lineWidth = 2;
+        // ctx.globalAlpha = 0.6;
+        // for(let x = timeOffset-ctx.lineWidth; x <= canvas.w+ctx.lineWidth; x+=tileSize){
+        //     ctx.beginPath();
+        //     ctx.moveTo(x, 0);
+        //     ctx.lineTo(x, canvas.h);
+        //     ctx.stroke();
+        //     ctx.closePath();
+        // }
+
+        // for(let y = -timeOffset-ctx.lineWidth; y <= canvas.h+ctx.lineWidth; y+=tileSize){
+        //     ctx.beginPath();
+        //     ctx.moveTo(0, y);
+        //     ctx.lineTo(canvas.w, y);
+        //     ctx.stroke();
+        //     ctx.closePath();
+        // }
+    }
+
+    biomeManager.draw();
+
+    renderMenuEnemies();
+
+    settingsMenu.draw();
+
+    changelog.draw();
+
+    if(window.connected === false || time - window.connectedTime < 800){
+        if(window.connected === false){
+            connectingTextAnimationCompletion = 1;
+        } else {
+            connectingTextAnimationCompletion = 1 - easeOutCubic((time - window.connectedTime)/800);
+        }
+        ctx.globalAlpha = 1;
+        ctx.font = "900 42px 'Ubuntu'";
+        ctx.fillStyle = '#f0f0f0';
+        ctx.strokeStyle = 'black'//"#1c8c54";
+        ctx.lineWidth = 5;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeText("Connecting...", canvas.w / 2, canvas.h * 0.5 * connectingTextAnimationCompletion - canvas.h * 0.03);
+        ctx.fillText("Connecting...", canvas.w / 2, canvas.h * 0.5 * connectingTextAnimationCompletion - canvas.h * 0.03);
+    }
+
+    let toTranslate = false;
+    if(time - window.connectedTime < 1000){
+        toTranslate = true;
+        const animationCompletion = easeOutCubic(smoothstep((time - window.connectedTime) / 1000));
+        var positionToTranslate = (0) * animationCompletion + (1-animationCompletion) * (-canvas.h/2-140);
+        ctx.translate(0, positionToTranslate);
+    }   
+
+    // Title text
+    ctx.font = "900 91px Ubuntu";
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.letterSpacing = "-1px";
+
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = 'black'//"#1c8c54";
+    ctx.strokeText("flowr.fun", canvas.w / 2, canvas.h / 2 - 140);
+
+    ctx.fillStyle = 'white';
+    ctx.fillText("flowr.fun", canvas.w / 2, canvas.h / 2 - 140);
+
+    ctx.letterSpacing = "0px";
+
+    if(toTranslate === true){
+        ctx.translate(0, -positionToTranslate);
+    }
+    
+    levelBar.draw();
+
+    // ctx.lineWidth = 6;
+    // ctx.strokeStyle = 'white';
+    // ctx.lineCap = 'round';
+    // ctx.strokeText("Flowr.io", canvas.w / 2, canvas.h / 3);
+
+    // ctx.font = "600 124px Fredoka One";
+    // ctx.fillStyle = '#f0f0f0';
+    // ctx.strokeStyle = 'black'//"#1c8c54";
+    // ctx.lineWidth = 8;
+    // ctx.textAlign = 'center';
+    // ctx.textBaseline = 'middle';
+    // ctx.strokeText("Flowr.io", canvas.w / 2, canvas.h / 3);
+    // ctx.fillText("Flowr.io", canvas.w / 2, canvas.h / 3);
+
+    if(window.connected === true){
+        craftingMenu.draw();
+        globalInventory.draw();
+        mobGallery.draw();
+        
+        const topPetalSlotSize = menuInventory.topPetalSlots[0].size;// global size for all petal slots
+        const bottomPetalSlotSize = menuInventory.bottomPetalSlots[0].size;
+
+        const initialDisplacement = topPetalSlotSize + topPetalSlotSize * paddingRatio + bottomPetalSlotSize + bottomPetalSlotSize * paddingRatio - 2;
+        const finalDisplacement = -canvas.h / 2 + initialDisplacement * 1.5;
+
+        if(time - window.connectedTime < 1000){
+            const animationCompletion = easeOutCubic(smoothstep((time - window.connectedTime) / 1000));
+            const positionToTranslate = finalDisplacement * animationCompletion + (1-animationCompletion) * initialDisplacement;
+            menuInventory.translateY = positionToTranslate;
+            ctx.translate(0, positionToTranslate);
+            menuInventory.draw(animationCompletion);
+            ctx.translate(0, -positionToTranslate);
+        } else {
+            if(window.squadUIEnabled === true){
+                menuInventory.translateY = finalDisplacement + squadUI.h * 0.95;
+                ctx.translate(0, finalDisplacement + squadUI.h * 0.95);
+                menuInventory.draw();
+                ctx.translate(0, -finalDisplacement - squadUI.h * 0.95);
+                squadUI.render(dt);
+            } else {
+                menuInventory.translateY = finalDisplacement;
+                ctx.translate(0, finalDisplacement);
+                menuInventory.draw();
+                ctx.translate(0, -finalDisplacement);
+            }
+        }
+        
+        if(draggingPetalContainer !== null){
+            draggingPetalContainer.draw();
+        }
+    }
+
+    streakMenu.draw();
+}
+
+function renderBg(){
+    ctx.fillRect(0,0,canvas.w,canvas.h);
+
+    // tiles
+    const timeOffset = (-time/20) % 50;
+
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.6;
+    for(let x = timeOffset-ctx.lineWidth; x <= canvas.w+ctx.lineWidth; x+=tileSize){
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.h);
+        ctx.stroke();
+        ctx.closePath();
+    }
+
+    for(let y = -timeOffset-ctx.lineWidth; y <= canvas.h+ctx.lineWidth; y+=tileSize){
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.w, y);
+        ctx.stroke();
+        ctx.closePath();
+    }
+    ctx.globalAlpha = 1;
+}
+
+function easeOutCubic(x) {
+    return 1 - Math.pow(1 - x, 3);
+}
+
+function renderAccountMenu(dt){
+    // just render the grid, and 2 buttons, one toggling between creating account and logging into an account, and the other saying create account/ login to account depending on toggle. 
+    ctx.fillStyle = '#1ea761';
+    ctx.fillRect(0,0,canvas.w,canvas.h);
+
+    // tiles
+    const timeOffset = (-time/20) % 50;
+
+    ctx.strokeStyle = "#1c8c54";
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.6;
+    for(let x = timeOffset-ctx.lineWidth; x <= canvas.w+ctx.lineWidth; x+=tileSize){
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.h);
+        ctx.stroke();
+        ctx.closePath();
+    }
+
+    for(let y = -timeOffset-ctx.lineWidth; y <= canvas.h+ctx.lineWidth; y+=tileSize){
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.w, y);
+        ctx.stroke();
+        ctx.closePath();
+    }
+
+    if(window.loginMessage !== undefined){
+        ctx.fillStyle = 'white';
+        ctx.strokeStyle = 'black';
+        ctx.font = `900 24px 'Ubuntu'`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.lineWidth = 5;
+        ctx.globalAlpha = 1;
+        if(performance.now() - window.lastLoginMessageChangeTime < 500){
+            ctx.globalAlpha = (performance.now() - window.lastLoginMessageChangeTime) / 500;
+        }
+        ctx.strokeText(window.loginMessage, canvas.w/2, canvas.h - 30);
+        ctx.fillText(window.loginMessage, canvas.w/2, canvas.h - 30);
+        ctx.globalAlpha = 1;
+        ctx.textBaseline = "middle";
+    }
+}
+
+// those little enemies that float by
+const enemyTypes = Object.keys(enemyRenderMap).filter(e => e !== 'Square' && e !== 'default' && noRenderingUi.includes(e) === false);
+//['Ladybug', 'Dark Ladybug', 'Shiny Ladybug', 'Rock', 'Dandelion', 'Baby Ant', 'Worker Ant', 'Soldier Ant', 'Fire Ant', 'Hornet', 'Bee', 'Spider', 'Centipede', 'Evil Centipede', 'Desert Centipede', 'Beetle', 'Scorpion', 'Sandstorm', 'Cactus', 'Fire Ant Burrow', 'Locust', 'Bubble'
+const biomeEnemyMap = {
+    garden: ['Hornet','Bee','Centipede','Evil Centipede','Ant Burrow','Dandelion','DandelionMissile','Ladybug','Rock','Spider','Worker Ant','Baby Ant','Soldier Ant','Dark Ladybug','Queen Ant','Missile'],
+    desert: ['Scorpion', 'Fire Ant Burrow', 'Beetle', 'Desert Centipede','Shiny Ladybug','Fire Ant','Sandstorm','Cactus','Locust','Queen Fire Ant','Desert Moth'],
+    ocean: ['Bubble','Shell','Jellyfish','Starfish','Leech','Crab','Sponge','Sea Urchin','UrchinMissile']
+};
+
+const rareBiomeEnemyMap = {
+    // garden: ['Missile'],
+    desert: ['FireMissile'],
+    ocean: ['Plastic', "Ocean Ladybug"]
+}
+
+const secretBiomeEnemyMap = {
+    //Does not spawn on the menu
+    desert: ["Evil Desert Centipede"],
+    ocean: ["Shiny Plastic"]
+}
+
+window.enemyStats = {};
+let menuEnemies = [];
+function initMenuEnemies(){
+    for(let i = 0; i < 26+(6*maxRarityObtained/8); i++){
+        spawnMenuEnemy();
+        menuEnemies[menuEnemies.length-1].x = Math.random() * window.innerHeight;
+    }
+}
+// initMenuEnemies();
+
+let menuEnemyTimer = 400;
+function renderMenuEnemies(){
+    if(Math.random() < 0.02+(0.005*maxRarityObtained/8)*dt/16.67){
+        spawnMenuEnemy();
+    }
+    // draw and simulate menu enemies
+    const now = time;
+    for(let i = 0; i < menuEnemies.length; i++){
+        const e = menuEnemies[i];
+
+        const mouseX = mouse.canvasX; const mouseY = mouse.canvasY;
+        if(Math.sqrt((mouseX - e.render.x) ** 2 + (mouseY - e.render.y) ** 2) < e.radius * 2 + 100 && e.dead !== true){
+            e.isHovered = true;
+        } else {
+            e.isHovered = false;
+        }
+
+        e.draw();
+
+        e.sinTimer+=dt/16.67;
+        e.angle += e.angleVel * 1 + Math.abs(Math.sin(now / 10000)) / 200*dt/16.67;
+        e.x += e.xVel*dt/16.67;
+        e.y += (e.yVel + Math.sin(e.sinTimer / e.maxSinTimer * 2 * Math.PI) * e.sinVel)*dt/16.67;
+        if(e.x > canvas.w + e.radius * 2 + 100){
+            // remove
+            e.toRemove = true;
+        }
+    }
+    menuEnemies = menuEnemies.filter(e => e.toRemove !== true);
+
+    ctx.lastTransform7 = ctx.getTransform();
+    // for(let i = 0; i < menuEnemies.length; i++){
+    //     menuEnemies[i].drawStatsBox();
+    // }
+    ctx.setTransform(ctx.lastTransform7);
+    delete ctx.lastTransform7;
+}
+
+function spawnMenuEnemy(){
+    if(typeof biomeManager === 'undefined'){
+        // setTimeout(() => {
+        //     spawnMenuEnemy();
+        // }, 200)
+        return;
+    }
+    const currentBiomeName = biomeManager.getCurrentBiomeData().current;
+    const biomeTypes = (rareBiomeEnemyMap[currentBiomeName] !== undefined && Math.random() < 0.01) ? rareBiomeEnemyMap[currentBiomeName] : biomeEnemyMap[currentBiomeName];
+    const radius = Math.random() < 0.0001 ? 360 : Math.sqrt(menuEnemyIncrementRadii[Math.floor(Math.random() * menuEnemyIncrementRadii.length)] * (Math.random() * 0.1 + 0.95)) * 8.7;
+    menuEnemies.push(new Enemy({
+        x: - radius * 3,
+        y: - radius + Math.random() * (canvas.h + radius * 2),
+        radius,
+        hp: 100,
+        maxHp: 100,
+        id: Math.random(),
+        type: biomeTypes[Math.floor(Math.random() * biomeTypes.length)],//enemyTypes[Math.floor(Math.random() * enemyTypes.length)],
+        rarity: 0,
+        angle: Math.random() * Math.PI * 2,
+        angleVel: Math.random() * 0.04 - 0.04 / 2,
+        xVel: Math.random() < 0.001 ? 20 : (5.8 + (Math.random() ** 3) * 1.5) / 2,// not using xv or yv so that i dont mess anything up
+        yVel: (Math.random() > 0.5 ? 1 : -1) * (Math.random() ** 3) * 1,
+        sinTimer: (212 + Math.random() * 46) * Math.random(),
+        sinVel: Math.random() * .8,
+        maxSinTimer: 212 + Math.random() * 46,
+        toRenderUi: false,
+        isMenuEnemy: true
+    }))
+}
+
+requestAnimationFrame(render);
+
+function renderDebug(){
+	ctx.font = "900 15px 'Ubuntu'";
+	ctx.textAlign = "right";
+	ctx.textBaseline = "bottom";
+	ctx.fillStyle = "white";
+	ctx.strokeStyle = "black";
+	ctx.lineWidth = 2;
+
+	const debugText = `${window.fps} fps, ${Object.keys(room.enemies).length} enemies, ${Object.keys(window.enemiesSent ?? {}).length} server enemies, ${Object.keys(room.flowers).length} flowers, ${Object.keys(room.petalContainers).length} petal containers`;
+	ctx.strokeText(debugText, canvas.w - 2, canvas.h - 2);
+	ctx.fillText(debugText, canvas.w - 2, canvas.h - 2);
+}
